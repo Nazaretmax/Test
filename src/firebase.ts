@@ -1,15 +1,47 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { getFirestore, doc, getDoc, setDoc, updateDoc, collection, query, orderBy, limit, onSnapshot, getDocFromServer, where, addDoc } from 'firebase/firestore';
-import firebaseConfig from '../firebase-applet-config.json';
+import { 
+  getAuth, 
+  GoogleAuthProvider, 
+  signInWithPopup, 
+  signOut, 
+  onAuthStateChanged, 
+  User 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  updateDoc, 
+  collection, 
+  query, 
+  orderBy, 
+  limit, 
+  onSnapshot, 
+  getDocFromServer, 
+  where, 
+  addDoc 
+} from 'firebase/firestore';
 
-// Initialize Firebase SDK
+// Configurazione che legge dal file .env tramite Vite
+const firebaseConfig = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID
+};
+
+// Inizializzazione Firebase
 const app = initializeApp(firebaseConfig);
+
+// Esportazione dei servizi principali
 export const auth = getAuth(app);
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = getFirestore(app);
 export const googleProvider = new GoogleAuthProvider();
 
-// Error Handling Spec for Firestore Permissions
+// Gestione Errori Firestore (mantenuta dal tuo codice originale)
 export enum OperationType {
   CREATE = 'create',
   UPDATE = 'update',
@@ -61,19 +93,20 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   throw new Error(JSON.stringify(errInfo));
 }
 
-// Validate Connection to Firestore
+// Test di connessione (mantenuto dal tuo codice originale)
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
+    console.log("Firebase collegato correttamente!");
   } catch (error) {
     if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration. ");
+      console.error("Firebase non raggiungibile. Controlla la configurazione nel file .env");
     }
-    // Skip logging for other errors, as this is simply a connection test.
   }
 }
 testConnection();
 
+// Esportazione funzioni e tipi
 export { 
   signInWithPopup, 
   signOut, 
