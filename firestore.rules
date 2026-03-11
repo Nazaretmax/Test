@@ -1,0 +1,143 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: users
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - User's unique ID
+    //   - displayName: string (required, max 50 chars) - User's display name
+    //   - photoURL: string (optional, valid URL) - User's profile picture URL
+    //   - highScore: number (required, >= 0) - User's highest score
+    //   - coins: number (required, >= 0) - User's collected coins
+    //   - unlockedSkins: list of strings (required, max 50 items) - Unlocked skin IDs
+    //   - selectedSkin: string (required, max 50 chars) - Currently selected skin ID
+    //   - unlockedDeathPhrases: list of strings (required, max 50 items) - Unlocked death phrase IDs
+    //   - selectedDeathPhrase: string (required, max 50 chars) - Currently selected death phrase ID
+    //   - unlockedMusic: list of strings (required, max 50 items) - Unlocked music track IDs
+    //   - selectedMusic: string (required, max 50 chars) - Currently selected music track ID
+    //
+    // Collection: leaderboard
+    // Document ID: {userId}
+    // Fields:
+    //   - uid: string (required) - User's unique ID
+    //   - displayName: string (required, max 50 chars) - User's display name
+    //   - photoURL: string (optional, valid URL) - User's profile picture URL
+    //   - score: number (required, >= 0) - User's highest score
+    //   - timestamp: number (required) - Time the score was achieved
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function uidUnchanged() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    }
+    
+    function uidNotModified() {
+      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function validStringLength(field, minLen, maxLen) {
+      return request.resource.data[field] is string &&
+        request.resource.data[field].size() >= minLen &&
+        request.resource.data[field].size() <= maxLen;
+    }
+    
+    function isValidUrl(url) {
+      return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
+    }
+    
+    function isValidOptionalUrl(field) {
+      return !('field' in request.resource.data) || isValidUrl(request.resource.data[field]);
+    }
+    
+    function isPositiveOrZero(field) {
+      return request.resource.data[field] is number && request.resource.data[field] >= 0;
+    }
+    
+    function isValidList(listField, maxSize) {
+      return request.resource.data[listField] is list && request.resource.data[listField].size() <= maxSize;
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidUserProfile() {
+      return hasOnlyAllowedFields(['uid', 'displayName', 'photoURL', 'highScore', 'coins', 'unlockedSkins', 'selectedSkin', 'unlockedDeathPhrases', 'selectedDeathPhrase', 'unlockedMusic', 'selectedMusic']) &&
+             hasRequiredFields(['uid', 'displayName', 'highScore', 'coins', 'unlockedSkins', 'selectedSkin', 'unlockedDeathPhrases', 'selectedDeathPhrase', 'unlockedMusic', 'selectedMusic']) &&
+             validStringLength('displayName', 1, 50) &&
+             (!('photoURL' in request.resource.data) || isValidUrl(request.resource.data.photoURL)) &&
+             isPositiveOrZero('highScore') &&
+             isPositiveOrZero('coins') &&
+             isValidList('unlockedSkins', 50) &&
+             validStringLength('selectedSkin', 1, 50) &&
+             isValidList('unlockedDeathPhrases', 50) &&
+             validStringLength('selectedDeathPhrase', 1, 50) &&
+             isValidList('unlockedMusic', 50) &&
+             validStringLength('selectedMusic', 1, 50);
+    }
+
+    function isValidLeaderboardEntry() {
+      return hasOnlyAllowedFields(['uid', 'displayName', 'photoURL', 'score', 'timestamp']) &&
+             hasRequiredFields(['uid', 'displayName', 'score', 'timestamp']) &&
+             validStringLength('displayName', 1, 50) &&
+             (!('photoURL' in request.resource.data) || isValidUrl(request.resource.data.photoURL)) &&
+             isPositiveOrZero('score') &&
+             request.resource.data.timestamp is number;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      // Users can read their own profile
+      allow read: if isOwner(userId);
+      
+      allow create: if isOwner(userId) && 
+                       isValidUserProfile() && 
+                       uidUnchanged();
+                       
+      allow update: if isOwner(userId) && 
+                       isValidUserProfile() && 
+                       uidNotModified();
+    }
+
+    match /leaderboard/{userId} {
+      // Anyone can read the leaderboard
+      allow read: if true;
+      
+      allow create: if isOwner(userId) && 
+                       isValidLeaderboardEntry() && 
+                       uidUnchanged();
+                       
+      allow update: if isOwner(userId) && 
+                       isValidLeaderboardEntry() && 
+                       uidNotModified();
+    }
+  }
+}

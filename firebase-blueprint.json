@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile containing game progress, coins, and customization options.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The user's unique ID."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "The user's display name."
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "The user's profile picture URL."
+        },
+        "highScore": {
+          "type": "number",
+          "description": "The user's highest score."
+        },
+        "coins": {
+          "type": "number",
+          "description": "The user's collected coins."
+        },
+        "unlockedSkins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of skin IDs unlocked by the user."
+        },
+        "selectedSkin": {
+          "type": "string",
+          "description": "The currently selected skin ID."
+        },
+        "unlockedDeathPhrases": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of death phrase IDs unlocked by the user."
+        },
+        "selectedDeathPhrase": {
+          "type": "string",
+          "description": "The currently selected death phrase ID."
+        },
+        "unlockedMusic": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of music track IDs unlocked by the user."
+        },
+        "selectedMusic": {
+          "type": "string",
+          "description": "The currently selected music track ID."
+        }
+      },
+      "required": ["uid", "displayName", "highScore", "coins", "unlockedSkins", "selectedSkin", "unlockedDeathPhrases", "selectedDeathPhrase", "unlockedMusic", "selectedMusic"]
+    },
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "An entry in the global leaderboard.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "The user's unique ID."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "The user's display name."
+        },
+        "photoURL": {
+          "type": "string",
+          "description": "The user's profile picture URL."
+        },
+        "score": {
+          "type": "number",
+          "description": "The user's highest score."
+        },
+        "timestamp": {
+          "type": "number",
+          "description": "The time the score was achieved."
+        }
+      },
+      "required": ["uid", "displayName", "score", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": {
+        "$ref": "#/entities/UserProfile"
+      },
+      "description": "Stores user profiles."
+    },
+    "/leaderboard/{userId}": {
+      "schema": {
+        "$ref": "#/entities/LeaderboardEntry"
+      },
+      "description": "Stores global leaderboard entries."
+    }
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "Ninja Revers",
+  "description": "Un gioco Endless Runner 2D dove un ninja corre all'infinito e salta tra pavimento e soffitto per schivare trappole.",
+  "requestFramePermissions": []
+}
