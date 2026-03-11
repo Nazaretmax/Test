@@ -1,5 +1,4 @@
 rules_version = '2';
-
 service cloud.firestore {
   match /databases/{database}/documents {
     // ===============================================================
@@ -9,135 +8,112 @@ service cloud.firestore {
     // Collection: users
     // Document ID: {userId}
     // Fields:
-    //   - uid: string (required) - User's unique ID
-    //   - displayName: string (required, max 50 chars) - User's display name
-    //   - photoURL: string (optional, valid URL) - User's profile picture URL
-    //   - highScore: number (required, >= 0) - User's highest score
-    //   - coins: number (required, >= 0) - User's collected coins
-    //   - unlockedSkins: list of strings (required, max 50 items) - Unlocked skin IDs
-    //   - selectedSkin: string (required, max 50 chars) - Currently selected skin ID
-    //   - unlockedDeathPhrases: list of strings (required, max 50 items) - Unlocked death phrase IDs
-    //   - selectedDeathPhrase: string (required, max 50 chars) - Currently selected death phrase ID
-    //   - unlockedMusic: list of strings (required, max 50 items) - Unlocked music track IDs
-    //   - selectedMusic: string (required, max 50 chars) - Currently selected music track ID
+    //   - uid: string (required) - The user's unique ID.
+    //   - name: string (optional) - Display name.
+    //   - photoURL: string (optional) - Profile picture URL.
+    //   - coins: number (required) - Current coin balance.
+    //   - highScore: number (required) - User's high score.
+    //   - unlockedSkins: list (required) - List of skin IDs.
+    //   - selectedSkin: string (required) - Current skin ID.
+    //   - unlockedMusic: list (required) - List of music IDs.
+    //   - selectedMusic: string (required) - Current music ID.
+    //   - unlockedDeathPhrases: list (required) - List of death phrase IDs.
+    //   - selectedDeathPhrase: string (required) - Current death phrase ID.
+    //   - lastUpdated: number (required) - Last update timestamp.
     //
     // Collection: leaderboard
-    // Document ID: {userId}
+    // Document ID: {entryId}
     // Fields:
-    //   - uid: string (required) - User's unique ID
-    //   - displayName: string (required, max 50 chars) - User's display name
-    //   - photoURL: string (optional, valid URL) - User's profile picture URL
-    //   - score: number (required, >= 0) - User's highest score
-    //   - timestamp: number (required) - Time the score was achieved
+    //   - uid: string (required) - User ID.
+    //   - name: string (required) - Display name.
+    //   - score: number (required) - High score.
+    //   - timestamp: number (required) - When achieved.
     //
     // ===============================================================
 
     // ===============================================================
     // Helper Functions
     // ===============================================================
-    
     function isAuthenticated() {
       return request.auth != null;
     }
-    
+
     function isOwner(userId) {
       return isAuthenticated() && request.auth.uid == userId;
     }
-    
-    function uidUnchanged() {
-      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.uid;
     }
-    
-    function uidNotModified() {
-      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
     }
-    
-    function hasRequiredFields(fields) {
-      return request.resource.data.keys().hasAll(fields);
-    }
-    
-    function validStringLength(field, minLen, maxLen) {
-      return request.resource.data[field] is string &&
-        request.resource.data[field].size() >= minLen &&
-        request.resource.data[field].size() <= maxLen;
-    }
-    
+
     function isValidUrl(url) {
       return url is string && (url.matches("^https://.*") || url.matches("^http://.*"));
-    }
-    
-    function isValidOptionalUrl(field) {
-      return !('field' in request.resource.data) || isValidUrl(request.resource.data[field]);
-    }
-    
-    function isPositiveOrZero(field) {
-      return request.resource.data[field] is number && request.resource.data[field] >= 0;
-    }
-    
-    function isValidList(listField, maxSize) {
-      return request.resource.data[listField] is list && request.resource.data[listField].size() <= maxSize;
     }
 
     function hasOnlyAllowedFields(fields) {
       return request.resource.data.keys().hasOnly(fields);
     }
 
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "nazaretmax@gmail.com" && request.auth.token.email_verified == true));
+    }
+
     // ===============================================================
     // Domain Validators
     // ===============================================================
-
-    function isValidUserProfile() {
-      return hasOnlyAllowedFields(['uid', 'displayName', 'photoURL', 'highScore', 'coins', 'unlockedSkins', 'selectedSkin', 'unlockedDeathPhrases', 'selectedDeathPhrase', 'unlockedMusic', 'selectedMusic']) &&
-             hasRequiredFields(['uid', 'displayName', 'highScore', 'coins', 'unlockedSkins', 'selectedSkin', 'unlockedDeathPhrases', 'selectedDeathPhrase', 'unlockedMusic', 'selectedMusic']) &&
-             validStringLength('displayName', 1, 50) &&
-             (!('photoURL' in request.resource.data) || isValidUrl(request.resource.data.photoURL)) &&
-             isPositiveOrZero('highScore') &&
-             isPositiveOrZero('coins') &&
-             isValidList('unlockedSkins', 50) &&
-             validStringLength('selectedSkin', 1, 50) &&
-             isValidList('unlockedDeathPhrases', 50) &&
-             validStringLength('selectedDeathPhrase', 1, 50) &&
-             isValidList('unlockedMusic', 50) &&
-             validStringLength('selectedMusic', 1, 50);
+    function isValidUserProfile(data) {
+      return hasRequiredFields(['uid', 'coins', 'highScore', 'unlockedSkins', 'selectedSkin', 'unlockedMusic', 'selectedMusic', 'unlockedDeathPhrases', 'selectedDeathPhrase', 'lastUpdated']) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             data.coins is int && data.coins >= 0 &&
+             data.highScore is int && data.highScore >= 0 &&
+             data.unlockedSkins is list && data.unlockedSkins.size() < 100 &&
+             data.selectedSkin is string && data.selectedSkin.size() < 50 &&
+             data.unlockedMusic is list && data.unlockedMusic.size() < 100 &&
+             data.selectedMusic is string && data.selectedMusic.size() < 50 &&
+             data.unlockedDeathPhrases is list && data.unlockedDeathPhrases.size() < 100 &&
+             data.selectedDeathPhrase is string && data.selectedDeathPhrase.size() < 50 &&
+             data.lastUpdated is int &&
+             (!('name' in data) || (data.name is string && data.name.size() < 100)) &&
+             (!('photoURL' in data) || (data.photoURL is string && isValidUrl(data.photoURL)));
     }
 
-    function isValidLeaderboardEntry() {
-      return hasOnlyAllowedFields(['uid', 'displayName', 'photoURL', 'score', 'timestamp']) &&
-             hasRequiredFields(['uid', 'displayName', 'score', 'timestamp']) &&
-             validStringLength('displayName', 1, 50) &&
-             (!('photoURL' in request.resource.data) || isValidUrl(request.resource.data.photoURL)) &&
-             isPositiveOrZero('score') &&
-             request.resource.data.timestamp is number;
+    function isValidLeaderboardEntry(data) {
+      return hasRequiredFields(['uid', 'name', 'score', 'timestamp']) &&
+             data.uid is string && data.uid == request.auth.uid &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.score is int && data.score >= 0 &&
+             data.timestamp is int;
     }
 
     // ===============================================================
     // Rules
     // ===============================================================
-
     match /users/{userId} {
-      // Users can read their own profile
-      allow read: if isOwner(userId);
-      
-      allow create: if isOwner(userId) && 
-                       isValidUserProfile() && 
-                       uidUnchanged();
-                       
-      allow update: if isOwner(userId) && 
-                       isValidUserProfile() && 
-                       uidNotModified();
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUserProfile(request.resource.data);
+      allow update: if isOwner(userId) && isValidUserProfile(request.resource.data);
     }
 
-    match /leaderboard/{userId} {
-      // Anyone can read the leaderboard
-      allow read: if true;
-      
-      allow create: if isOwner(userId) && 
-                       isValidLeaderboardEntry() && 
-                       uidUnchanged();
-                       
-      allow update: if isOwner(userId) && 
-                       isValidLeaderboardEntry() && 
-                       uidNotModified();
+    match /leaderboard/{entryId} {
+      allow read: if true; // Leaderboard is public
+      allow create: if isAuthenticated() && isValidLeaderboardEntry(request.resource.data);
+      allow update: if isAuthenticated() && request.auth.uid == resource.data.uid && isValidLeaderboardEntry(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

@@ -4,10 +4,12 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Share2, Trophy, ShoppingBag, LogIn, LogOut, Coins, User as UserIcon, Globe, Music, Mic, CreditCard } from 'lucide-react';
-import { auth, db } from './firebase';
-import { signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged, User } from 'firebase/auth';
-import { doc, getDoc, setDoc, updateDoc, collection, query, orderBy, limit, onSnapshot, serverTimestamp, increment } from 'firebase/firestore';
+import { Share2, Trophy, ShoppingBag, Coins, User as UserIcon, Globe, Music, Mic, CreditCard, LogIn, LogOut } from 'lucide-react';
+import { 
+  auth, db, googleProvider, signInWithPopup, signOut, onAuthStateChanged, 
+  doc, getDoc, setDoc, updateDoc, collection, query, orderBy, limit, onSnapshot, 
+  OperationType, handleFirestoreError, where, addDoc, User 
+} from './firebase';
 
 // --- Localization ---
 const TRANSLATIONS = {
@@ -75,26 +77,6 @@ const TRANSLATIONS = {
 type Language = keyof typeof TRANSLATIONS;
 
 // --- Error Handling ---
-enum OperationType {
-  CREATE = 'create', UPDATE = 'update', DELETE = 'delete', LIST = 'list', GET = 'get', WRITE = 'write',
-}
-interface FirestoreErrorInfo {
-  error: string; operationType: OperationType; path: string | null;
-  authInfo: any;
-}
-function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
-  const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth.currentUser?.uid, email: auth.currentUser?.email,
-      emailVerified: auth.currentUser?.emailVerified, isAnonymous: auth.currentUser?.isAnonymous,
-    },
-    operationType, path
-  };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
-
 interface ErrorBoundaryProps {
   children: React.ReactNode;
 }
@@ -128,7 +110,7 @@ type GameState = 'LOADING' | 'TUTORIAL_PROMPT' | 'TUTORIAL_PLAYING' | 'START' | 
 
 interface UserProfile {
     uid: string;
-    displayName: string;
+    name: string;
     photoURL: string;
     highScore: number;
     coins: number;
@@ -138,7 +120,30 @@ interface UserProfile {
     selectedDeathPhrase: string;
     unlockedMusic: string[];
     selectedMusic: string;
+    lastUpdated: number;
 }
+
+interface LeaderboardEntry {
+    uid: string;
+    name: string;
+    score: number;
+    timestamp: number;
+}
+
+const DEFAULT_PROFILE: UserProfile = {
+    uid: 'local-ninja',
+    name: 'Ninja Runner',
+    photoURL: '',
+    highScore: 0,
+    coins: 0,
+    unlockedSkins: ['default'],
+    selectedSkin: 'default',
+    unlockedDeathPhrases: ['default'],
+    selectedDeathPhrase: 'you are dead',
+    unlockedMusic: ['default'],
+    selectedMusic: 'default',
+    lastUpdated: Date.now()
+};
 
 interface LeaderboardEntry {
     uid: string;
@@ -299,8 +304,10 @@ class GameEngine {
     obstacles: any[] = [];
     powerups: any[] = [];
     particles: any[] = [];
-    speed = 6;
-    baseSpeed = 6;
+    speed = 7;
+    baseSpeed = 7;
+    maxSpeed = 18;
+    speedInc = 0.15;
     score = 0;
     sessionCoins = 0;
     dodgedObstacles = 0;
@@ -310,7 +317,6 @@ class GameEngine {
     tutorialSuccess = false;
     tutorialSuccessTimer = 0;
     
-    difficulty: 'EASY' | 'NORMAL' | 'HARD' = 'NORMAL';
     activePowerUp: { type: 'INVINCIBILITY' | 'MULTIPLIER' | 'SLOW_MO', timeLeft: number } | null = null;
 
     constructor(canvas: HTMLCanvasElement) {
@@ -337,9 +343,8 @@ class GameEngine {
         this.audio.deathPhrase = deathPhrase;
     }
 
-    start(isTutorial = false, difficulty: 'EASY' | 'NORMAL' | 'HARD' = 'NORMAL') {
+    start(isTutorial = false) {
         this.isTutorial = isTutorial;
-        this.difficulty = difficulty;
         this.ninja = { ...this.ninja, x: 100, y: 360, lane: 'BOTTOM', isJumping: false, targetLane: 'BOTTOM' };
         this.trail = [];
         this.obstacles = [];
@@ -347,7 +352,7 @@ class GameEngine {
         this.particles = [];
         this.activePowerUp = null;
         
-        this.baseSpeed = difficulty === 'EASY' ? 5 : difficulty === 'NORMAL' ? 7 : 10;
+        this.baseSpeed = 7;
         this.speed = this.baseSpeed;
         
         this.score = 0;
@@ -468,9 +473,8 @@ class GameEngine {
                     }
                 } else {
                     this.spawnObstacle();
-                    const diffMultiplier = this.difficulty === 'EASY' ? 1.5 : this.difficulty === 'HARD' ? 0.7 : 1;
-                    const maxTimer = Math.max(30, (90 - this.score * 2) * diffMultiplier);
-                    const minTimer = Math.max(15, (40 - this.score) * diffMultiplier);
+                    const maxTimer = Math.max(30, (90 - this.score * 1.5));
+                    const minTimer = Math.max(15, (40 - this.score * 0.5));
                     this.spawnTimer = Math.random() * (maxTimer - minTimer) + minTimer;
                 }
             }
@@ -553,9 +557,7 @@ class GameEngine {
                     this.score += scoreGain;
                     this.setScore(this.score);
                     
-                    const maxSpeed = this.difficulty === 'EASY' ? 12 : this.difficulty === 'HARD' ? 20 : 15;
-                    const speedInc = this.difficulty === 'EASY' ? 0.1 : this.difficulty === 'HARD' ? 0.25 : 0.15;
-                    this.speed = Math.min(this.speed + speedInc, maxSpeed);
+                    this.speed = Math.min(this.speed + this.speedInc, this.maxSpeed);
                     
                     this.audio.playScore();
                     this.createParticles(obs.x + 20, obs.y + 20, '#94a3b8', 5);
@@ -914,22 +916,94 @@ export default function App() {
     const [score, setScore] = useState(0);
     const [highScore, setHighScore] = useState(0);
     const [coins, setCoins] = useState(0);
-    const [user, setUser] = useState<User | null>(null);
     const [profile, setProfile] = useState<UserProfile | null>(null);
     const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
     const [lang, setLang] = useState<Language>('en');
     const [shopTab, setShopTab] = useState<'skins' | 'audio' | 'coins'>('skins');
     const [isProcessing, setIsProcessing] = useState(false);
-    const [difficulty, setDifficulty] = useState<'EASY' | 'NORMAL' | 'HARD'>('NORMAL');
     const [activePowerUp, setActivePowerUp] = useState<string | null>(null);
     const [dailyChallenge, setDailyChallenge] = useState<{desc: string, target: number, progress: number, reward: number, completed: boolean, type: string} | null>(null);
+    const [user, setUser] = useState<User | null>(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
     
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const engineRef = useRef<GameEngine | null>(null);
 
     const t = TRANSLATIONS[lang];
 
-    // Detect language on mount
+    // Auth Listener
+    useEffect(() => {
+        const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+            setUser(currentUser);
+            setIsAuthReady(true);
+        });
+        return () => unsubscribe();
+    }, []);
+
+    // Load Profile from Firestore or LocalStorage
+    useEffect(() => {
+        if (!isAuthReady) return;
+
+        const loadData = async () => {
+            if (user) {
+                const userDocRef = doc(db, 'users', user.uid);
+                try {
+                    const userDoc = await getDoc(userDocRef);
+                    if (userDoc.exists()) {
+                        const data = userDoc.data() as UserProfile;
+                        setProfile(data);
+                        setHighScore(data.highScore);
+                        setCoins(data.coins);
+                    } else {
+                        // Create new profile in Firestore
+                        const newProfile: UserProfile = {
+                            ...DEFAULT_PROFILE,
+                            uid: user.uid,
+                            name: user.displayName || 'Ninja',
+                            photoURL: user.photoURL || '',
+                            lastUpdated: Date.now()
+                        };
+                        await setDoc(userDocRef, newProfile);
+                        setProfile(newProfile);
+                    }
+                } catch (error) {
+                    handleFirestoreError(error, OperationType.GET, 'users/' + user.uid);
+                }
+            } else {
+                // Anonymous/Local Mode
+                const savedProfile = localStorage.getItem('ninja_profile');
+                if (savedProfile) {
+                    const data = JSON.parse(savedProfile);
+                    setProfile(data);
+                    setHighScore(data.highScore);
+                    setCoins(data.coins);
+                } else {
+                    setProfile(DEFAULT_PROFILE);
+                    setHighScore(DEFAULT_PROFILE.highScore);
+                    setCoins(DEFAULT_PROFILE.coins);
+                }
+            }
+        };
+
+        loadData();
+    }, [user, isAuthReady]);
+
+    // Leaderboard Listener
+    useEffect(() => {
+        const q = query(collection(db, 'leaderboard'), orderBy('score', 'desc'), limit(10));
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            const entries: LeaderboardEntry[] = [];
+            snapshot.forEach((doc) => {
+                entries.push(doc.data() as LeaderboardEntry);
+            });
+            setLeaderboard(entries);
+        }, (error) => {
+            handleFirestoreError(error, OperationType.LIST, 'leaderboard');
+        });
+        return () => unsubscribe();
+    }, []);
+
+    // Detect language and setup daily challenge on mount
     useEffect(() => {
         const browserLang = navigator.language.split('-')[0];
         if (Object.keys(TRANSLATIONS).includes(browserLang)) {
@@ -952,78 +1026,53 @@ export default function App() {
             localStorage.setItem('ninja_daily_' + today, JSON.stringify(newChallenge));
             setDailyChallenge(newChallenge);
         }
-    }, []);
 
-    // Auth & Profile Listener
-    useEffect(() => {
-        const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-            setUser(currentUser);
-            if (currentUser) {
-                try {
-                    const userRef = doc(db, 'users', currentUser.uid);
-                    const docSnap = await getDoc(userRef);
-                    if (docSnap.exists()) {
-                        const data = docSnap.data() as UserProfile;
-                        setProfile(data);
-                        setHighScore(data.highScore);
-                        setCoins(data.coins);
-                        if (engineRef.current) {
-                            const skin = SKINS.find(s => s.id === data.selectedSkin);
-                            if (skin) engineRef.current.setNinjaColor(skin.color);
-                            engineRef.current.setAudioConfig(data.selectedMusic || 'default', data.selectedDeathPhrase || 'you are dead');
-                        }
-                    } else {
-                        const newProfile: UserProfile = {
-                            uid: currentUser.uid,
-                            displayName: currentUser.displayName || 'Ninja Anonimo',
-                            photoURL: currentUser.photoURL || '',
-                            highScore: 0,
-                            coins: 0,
-                            unlockedSkins: ['default'],
-                            selectedSkin: 'default',
-                            unlockedDeathPhrases: ['default'],
-                            selectedDeathPhrase: 'you are dead',
-                            unlockedMusic: ['default'],
-                            selectedMusic: 'default'
-                        };
-                        await setDoc(userRef, newProfile);
-                        setProfile(newProfile);
-                    }
-                } catch (error) {
-                    handleFirestoreError(error, OperationType.GET, 'users');
-                }
-            } else {
-                setProfile(null);
-                // Load local fallback
-                const savedHighScore = localStorage.getItem('ninjaHighScore');
-                if (savedHighScore) setHighScore(parseInt(savedHighScore));
-            }
-        });
-        return () => unsubscribe();
-    }, []);
-
-    // Leaderboard Listener
-    useEffect(() => {
-        const q = query(collection(db, 'leaderboard'), orderBy('score', 'desc'), limit(10));
-        const unsubscribe = onSnapshot(q, (snapshot) => {
-            const entries: LeaderboardEntry[] = [];
-            snapshot.forEach((doc) => entries.push(doc.data() as LeaderboardEntry));
-            setLeaderboard(entries);
-        }, (error) => {
-            handleFirestoreError(error, OperationType.LIST, 'leaderboard');
-        });
-        return () => unsubscribe();
-    }, []);
-
-    // Game Initialization
-    useEffect(() => {
+        // Initial Game State
         const tutorialDone = localStorage.getItem('tutorialCompleted');
         if (tutorialDone === 'true') {
             setGameState('START');
         } else {
             setGameState('TUTORIAL_PROMPT');
         }
+    }, []);
 
+    const handleLogin = async () => {
+        try {
+            await signInWithPopup(auth, googleProvider);
+        } catch (error) {
+            console.error("Login failed", error);
+        }
+    };
+
+    const handleLogout = async () => {
+        try {
+            await signOut(auth);
+            setProfile(DEFAULT_PROFILE);
+            setHighScore(0);
+            setCoins(0);
+        } catch (error) {
+            console.error("Logout failed", error);
+        }
+    };
+
+    const saveProfile = async (updatedProfile: UserProfile) => {
+        setProfile(updatedProfile);
+        setHighScore(updatedProfile.highScore);
+        setCoins(updatedProfile.coins);
+        
+        if (user) {
+            try {
+                await updateDoc(doc(db, 'users', user.uid), { ...updatedProfile, lastUpdated: Date.now() });
+            } catch (error) {
+                handleFirestoreError(error, OperationType.UPDATE, 'users/' + user.uid);
+            }
+        } else {
+            localStorage.setItem('ninja_profile', JSON.stringify(updatedProfile));
+        }
+    };
+
+    // Game Initialization
+    useEffect(() => {
         if (canvasRef.current && !engineRef.current) {
             engineRef.current = new GameEngine(canvasRef.current);
         }
@@ -1039,63 +1088,61 @@ export default function App() {
                     const maxPossibleCoins = Math.floor(finalScore / 2) + 10;
                     const validatedCoins = Math.min(sessionCoins, maxPossibleCoins);
                     
-                    // Update local state
-                    let newHigh = highScore;
-                    if (finalScore > highScore) {
-                        newHigh = finalScore;
-                        setHighScore(finalScore);
-                        localStorage.setItem('ninjaHighScore', finalScore.toString());
-                    }
-
-                    // Handle Daily Challenge
-                    let challengeReward = 0;
-                    if (dailyChallenge && !dailyChallenge.completed) {
-                        let newProgress = dailyChallenge.progress;
-                        if (dailyChallenge.type === 'coins') newProgress += validatedCoins;
-                        else if (dailyChallenge.type === 'score') newProgress = Math.max(newProgress, finalScore);
-                        else if (dailyChallenge.type === 'dodge') newProgress += dodgedObstacles;
-
-                        if (newProgress >= dailyChallenge.target) {
-                            newProgress = dailyChallenge.target;
-                            challengeReward = dailyChallenge.reward;
-                            const updatedChallenge = { ...dailyChallenge, progress: newProgress, completed: true };
-                            setDailyChallenge(updatedChallenge);
-                            localStorage.setItem('ninja_daily_' + new Date().toDateString(), JSON.stringify(updatedChallenge));
-                        } else {
-                            const updatedChallenge = { ...dailyChallenge, progress: newProgress };
+                    if (profile) {
+                        let challengeReward = 0;
+                        if (dailyChallenge && !dailyChallenge.completed) {
+                            let newProgress = dailyChallenge.progress;
+                            if (dailyChallenge.type === 'coins') newProgress += validatedCoins;
+                            else if (dailyChallenge.type === 'score') newProgress = Math.max(newProgress, finalScore);
+                            else if (dailyChallenge.type === 'dodge') newProgress += dodgedObstacles;
+                            
+                            const completed = newProgress >= dailyChallenge.target;
+                            if (completed) challengeReward = dailyChallenge.reward;
+                            
+                            const updatedChallenge = { ...dailyChallenge, progress: newProgress, completed };
                             setDailyChallenge(updatedChallenge);
                             localStorage.setItem('ninja_daily_' + new Date().toDateString(), JSON.stringify(updatedChallenge));
                         }
-                    }
 
-                    // Save to Firebase securely using increment
-                    if (auth.currentUser && profile) {
-                        try {
-                            const userRef = doc(db, 'users', auth.currentUser.uid);
-                            await updateDoc(userRef, {
-                                highScore: newHigh,
-                                coins: increment(validatedCoins + challengeReward)
-                            });
-                            
-                            // Update local profile coins
-                            setProfile(prev => prev ? { ...prev, coins: prev.coins + validatedCoins + challengeReward } : null);
-                            setCoins(prev => prev + validatedCoins + challengeReward);
-                            
-                            if (finalScore > profile.highScore) {
-                                const leadRef = doc(db, 'leaderboard', auth.currentUser.uid);
-                                await setDoc(leadRef, {
-                                    uid: auth.currentUser.uid,
-                                    displayName: profile.displayName,
-                                    photoURL: profile.photoURL,
-                                    score: finalScore,
-                                    timestamp: Date.now()
-                                });
+                        const newCoins = profile.coins + validatedCoins + challengeReward;
+                        const newHighScore = Math.max(profile.highScore, finalScore);
+                        
+                        const updatedProfile = { 
+                            ...profile, 
+                            coins: newCoins, 
+                            highScore: newHighScore,
+                            lastUpdated: Date.now()
+                        };
+                        
+                        await saveProfile(updatedProfile);
+
+                        // Update Global Leaderboard
+                        if (user && finalScore > 0) {
+                            try {
+                                const userEntryRef = doc(db, 'leaderboard', user.uid);
+                                const entryDoc = await getDoc(userEntryRef);
+                                
+                                if (entryDoc.exists()) {
+                                    const currentEntry = entryDoc.data() as LeaderboardEntry;
+                                    if (finalScore > currentEntry.score) {
+                                        await updateDoc(userEntryRef, {
+                                            score: finalScore,
+                                            timestamp: Date.now(),
+                                            name: user.displayName || 'Ninja'
+                                        });
+                                    }
+                                } else {
+                                    await setDoc(userEntryRef, {
+                                        uid: user.uid,
+                                        name: user.displayName || 'Ninja',
+                                        score: finalScore,
+                                        timestamp: Date.now()
+                                    });
+                                }
+                            } catch (error) {
+                                handleFirestoreError(error, OperationType.WRITE, 'leaderboard/' + user.uid);
                             }
-                        } catch (error) {
-                            handleFirestoreError(error, OperationType.WRITE, 'users/leaderboard');
                         }
-                    } else {
-                        setCoins(prev => prev + validatedCoins + challengeReward);
                     }
                 },
                 () => {
@@ -1124,7 +1171,7 @@ export default function App() {
     const startGame = () => {
         setGameState('PLAYING');
         setScore(0);
-        engineRef.current?.start(false, difficulty);
+        engineRef.current?.start(false);
     };
 
     const startTutorial = () => {
@@ -1157,137 +1204,122 @@ export default function App() {
         }
     };
 
-    const handleLogin = async () => {
-        try {
-            const provider = new GoogleAuthProvider();
-            await signInWithPopup(auth, provider);
-        } catch (error) {
-            console.error("Login failed", error);
-        }
-    };
-
     const buySkin = async (skinId: string, price: number) => {
-        if (!user || !profile) return;
+        if (!profile) return;
         if (profile.coins >= price && !profile.unlockedSkins.includes(skinId)) {
-            try {
-                const newUnlocked = [...profile.unlockedSkins, skinId];
-                const userRef = doc(db, 'users', user.uid);
-                await updateDoc(userRef, { coins: increment(-price), unlockedSkins: newUnlocked });
-                setProfile({ ...profile, coins: profile.coins - price, unlockedSkins: newUnlocked });
-                setCoins(prev => prev - price);
-            } catch (error) {
-                handleFirestoreError(error, OperationType.UPDATE, 'users');
-            }
+            const newUnlocked = [...profile.unlockedSkins, skinId];
+            const updatedProfile = { ...profile, coins: profile.coins - price, unlockedSkins: newUnlocked };
+            await saveProfile(updatedProfile);
         }
     };
 
     const selectSkin = async (skinId: string) => {
-        if (!user || !profile) return;
+        if (!profile) return;
         if (profile.unlockedSkins.includes(skinId)) {
-            try {
-                const userRef = doc(db, 'users', user.uid);
-                await updateDoc(userRef, { selectedSkin: skinId });
-                setProfile({ ...profile, selectedSkin: skinId });
-                const skin = SKINS.find(s => s.id === skinId);
-                if (skin && engineRef.current) engineRef.current.setNinjaColor(skin.color);
-            } catch (error) {
-                handleFirestoreError(error, OperationType.UPDATE, 'users');
-            }
+            const updatedProfile = { ...profile, selectedSkin: skinId };
+            await saveProfile(updatedProfile);
+            const skin = SKINS.find(s => s.id === skinId);
+            if (skin && engineRef.current) engineRef.current.setNinjaColor(skin.color);
         }
     };
 
     const buyAudio = async (type: 'music' | 'deathPhrase', id: string, price: number) => {
-        if (!user || !profile) return;
+        if (!profile) return;
         const unlockedList = type === 'music' ? profile.unlockedMusic : profile.unlockedDeathPhrases;
         if (profile.coins >= price && !unlockedList.includes(id)) {
-            try {
-                const newUnlocked = [...unlockedList, id];
-                const updateData = type === 'music' ? { coins: increment(-price), unlockedMusic: newUnlocked } : { coins: increment(-price), unlockedDeathPhrases: newUnlocked };
-                const userRef = doc(db, 'users', user.uid);
-                await updateDoc(userRef, updateData);
-                const profileUpdate = type === 'music' ? { coins: profile.coins - price, unlockedMusic: newUnlocked } : { coins: profile.coins - price, unlockedDeathPhrases: newUnlocked };
-                setProfile({ ...profile, ...profileUpdate });
-                setCoins(prev => prev - price);
-            } catch (error) {
-                handleFirestoreError(error, OperationType.UPDATE, 'users');
-            }
+            const newUnlocked = [...unlockedList, id];
+            const updatedProfile = type === 'music' 
+                ? { ...profile, coins: profile.coins - price, unlockedMusic: newUnlocked } 
+                : { ...profile, coins: profile.coins - price, unlockedDeathPhrases: newUnlocked };
+            await saveProfile(updatedProfile);
         }
     };
 
     const selectAudio = async (type: 'music' | 'deathPhrase', id: string) => {
-        if (!user || !profile) return;
+        if (!profile) return;
         const unlockedList = type === 'music' ? profile.unlockedMusic : profile.unlockedDeathPhrases;
         if (unlockedList.includes(id)) {
-            try {
-                const updateData = type === 'music' ? { selectedMusic: id } : { selectedDeathPhrase: id };
-                const userRef = doc(db, 'users', user.uid);
-                await updateDoc(userRef, updateData);
-                setProfile({ ...profile, ...updateData });
-                
-                if (engineRef.current) {
-                    const m = type === 'music' ? id : profile.selectedMusic;
-                    const dp = type === 'deathPhrase' ? id : profile.selectedDeathPhrase;
-                    const dpText = DEATH_PHRASES.find(d => d.id === dp)?.text || 'you are dead';
-                    engineRef.current.setAudioConfig(m, dpText);
-                }
-            } catch (error) {
-                handleFirestoreError(error, OperationType.UPDATE, 'users');
+            const updatedProfile = type === 'music' 
+                ? { ...profile, selectedMusic: id } 
+                : { ...profile, selectedDeathPhrase: id };
+            await saveProfile(updatedProfile);
+            
+            if (engineRef.current) {
+                const m = type === 'music' ? id : profile.selectedMusic;
+                const dp = type === 'deathPhrase' ? id : profile.selectedDeathPhrase;
+                const dpText = DEATH_PHRASES.find(d => d.id === dp)?.text || 'you are dead';
+                engineRef.current.setAudioConfig(m, dpText);
             }
         }
     };
 
-    const buyBundle = async (coinsToAdd: number) => {
-        if (!user || !profile || isProcessing) return;
+    const buyBundle = (coinsToAdd: number) => {
+        if (!profile || isProcessing) return;
         setIsProcessing(true);
-        // Simulate IAP processing
         setTimeout(async () => {
-            try {
-                const userRef = doc(db, 'users', user.uid);
-                await updateDoc(userRef, { coins: increment(coinsToAdd) });
-                setProfile({ ...profile, coins: profile.coins + coinsToAdd });
-                setCoins(prev => prev + coinsToAdd);
-            } catch (error) {
-                handleFirestoreError(error, OperationType.UPDATE, 'users');
-            } finally {
-                setIsProcessing(false);
-            }
-        }, 1500);
+            const updatedProfile = { ...profile, coins: profile.coins + coinsToAdd };
+            await saveProfile(updatedProfile);
+            setIsProcessing(false);
+        }, 1000);
     };
 
     return (
         <ErrorBoundary>
             <div className="relative w-full h-screen bg-slate-950 overflow-hidden touch-none select-none flex items-center justify-center font-sans">
+                {/* Game Canvas - Hidden when not playing */}
                 <canvas
                     ref={canvasRef}
                     width={800}
                     height={450}
-                    className="max-w-full max-h-full object-contain shadow-2xl shadow-black/50"
+                    className={`max-w-full max-h-full object-contain shadow-2xl shadow-black/50 transition-opacity duration-500 ${
+                        (gameState === 'PLAYING' || gameState === 'TUTORIAL_PLAYING' || gameState === 'GAME_OVER') ? 'opacity-100' : 'opacity-0'
+                    }`}
                     onTouchStart={handleTap}
                     onMouseDown={handleTap}
                 />
 
+                {/* Immersive Menu Background (Visible when not playing) */}
+                {!(gameState === 'PLAYING' || gameState === 'TUTORIAL_PLAYING') && (
+                    <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-950 to-emerald-950/20 z-0">
+                        <div className="absolute inset-0 opacity-20 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]"></div>
+                        {/* Animated background elements */}
+                        <div className="absolute top-1/4 left-1/4 w-64 h-64 bg-emerald-500/10 rounded-full blur-[120px] animate-pulse"></div>
+                        <div className="absolute bottom-1/4 right-1/4 w-96 h-96 bg-blue-500/10 rounded-full blur-[120px] animate-pulse delay-700"></div>
+                    </div>
+                )}
+
                 {/* Top Bar (Auth & Coins) */}
                 {(gameState === 'START' || gameState === 'GAME_OVER' || gameState === 'LEADERBOARD' || gameState === 'SHOP') && (
                     <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-auto z-20">
-                        <div className="flex gap-2">
-                            {user ? (
-                                <button onClick={() => signOut(auth)} className="bg-slate-800/80 hover:bg-slate-700 backdrop-blur text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-bold transition-colors">
-                                    <img src={user.photoURL || ''} alt="Profile" className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
-                                    <span className="hidden sm:inline">{user.displayName}</span>
-                                    <LogOut className="w-4 h-4 text-slate-400" />
-                                </button>
-                            ) : (
-                                <button onClick={handleLogin} className="bg-blue-600/90 hover:bg-blue-500 backdrop-blur text-white px-4 py-2 rounded-xl flex items-center gap-2 text-sm font-bold transition-colors shadow-lg shadow-blue-900/20">
-                                    <LogIn className="w-4 h-4" /> {t.loginToSave}
-                                </button>
+                        <div className="flex flex-col gap-2">
+                            <div className="flex gap-2">
+                                <select 
+                                    value={lang} 
+                                    onChange={(e) => setLang(e.target.value as Language)}
+                                    className="bg-slate-800/80 text-white px-2 py-2 rounded-xl text-sm font-bold outline-none border border-slate-700"
+                                >
+                                    {Object.keys(TRANSLATIONS).map(l => <option key={l} value={l}>{l.toUpperCase()}</option>)}
+                                </select>
+                                {user ? (
+                                    <button onClick={handleLogout} className="bg-slate-800/80 text-white p-2 rounded-xl border border-slate-700 hover:bg-slate-700" title={t.logout}>
+                                        <LogOut className="w-5 h-5" />
+                                    </button>
+                                ) : (
+                                    <button onClick={handleLogin} className="bg-emerald-600/80 text-white p-2 rounded-xl border border-emerald-500/30 hover:bg-emerald-500" title={t.login}>
+                                        <LogIn className="w-5 h-5" />
+                                    </button>
+                                )}
+                            </div>
+                            {user && (
+                                <div className="flex items-center gap-2 bg-slate-800/80 border border-slate-700 p-2 rounded-xl backdrop-blur">
+                                    {user.photoURL ? (
+                                        <img src={user.photoURL} alt="" className="w-6 h-6 rounded-full border border-emerald-400" referrerPolicy="no-referrer" />
+                                    ) : (
+                                        <UserIcon className="w-5 h-5 text-slate-400" />
+                                    )}
+                                    <span className="text-white text-xs font-bold truncate max-w-[100px]">{user.displayName}</span>
+                                </div>
                             )}
-                            <select 
-                                value={lang} 
-                                onChange={(e) => setLang(e.target.value as Language)}
-                                className="bg-slate-800/80 text-white px-2 py-2 rounded-xl text-sm font-bold outline-none border border-slate-700"
-                            >
-                                {Object.keys(TRANSLATIONS).map(l => <option key={l} value={l}>{l.toUpperCase()}</option>)}
-                            </select>
                         </div>
                         <div className="bg-amber-500/10 border border-amber-500/20 backdrop-blur text-amber-400 px-4 py-2 rounded-xl flex items-center gap-2 font-black text-lg shadow-lg">
                             <Coins className="w-5 h-5" /> {coins}
@@ -1315,14 +1347,14 @@ export default function App() {
                     )}
 
                     {gameState === 'START' && (
-                        <div className="pointer-events-auto text-center flex flex-col items-center">
-                            <h1 className="text-6xl md:text-7xl font-black text-white mb-8 tracking-tighter drop-shadow-2xl italic">
+                        <div className="pointer-events-auto text-center flex flex-col items-center z-10">
+                            <h1 className="text-7xl md:text-9xl font-black text-white mb-8 tracking-tighter drop-shadow-2xl italic">
                                 NINJA<br/><span className="text-emerald-500">REVERS</span>
                             </h1>
                             
                             {/* Daily Challenge UI */}
                             {dailyChallenge && (
-                                <div className="bg-slate-800/80 border border-amber-500/30 p-4 rounded-2xl mb-8 max-w-sm w-full backdrop-blur shadow-lg">
+                                <div className="bg-slate-800/80 border border-amber-500/30 p-4 rounded-2xl mb-12 max-w-sm w-full backdrop-blur shadow-lg">
                                     <div className="flex items-center justify-between mb-2">
                                         <h3 className="text-amber-400 font-bold text-sm uppercase tracking-wider flex items-center gap-2">
                                             <Trophy className="w-4 h-4" /> {t.dailyChallenge}
@@ -1345,30 +1377,17 @@ export default function App() {
                                 </div>
                             )}
 
-                            {/* Difficulty Selection */}
-                            <div className="flex gap-2 mb-8 bg-slate-800/50 p-1 rounded-2xl backdrop-blur">
-                                {['EASY', 'NORMAL', 'HARD'].map((level) => (
-                                    <button
-                                        key={level}
-                                        onClick={() => setDifficulty(level as any)}
-                                        className={`px-6 py-2 rounded-xl text-sm font-bold transition-all ${difficulty === level ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'text-slate-400 hover:text-white hover:bg-slate-700/50'}`}
-                                    >
-                                        {t[level.toLowerCase() as keyof typeof t]}
-                                    </button>
-                                ))}
-                            </div>
-
-                            <button onClick={startGame} className="bg-emerald-600 hover:bg-emerald-500 text-white px-16 py-5 rounded-full font-black text-3xl shadow-2xl shadow-emerald-900/50 transition-transform active:scale-95 mb-6">
+                            <button onClick={startGame} className="bg-emerald-600 hover:bg-emerald-500 text-white px-20 py-6 rounded-full font-black text-4xl shadow-2xl shadow-emerald-900/50 transition-transform active:scale-95 mb-10">
                                 {t.play}
                             </button>
-                            <div className="flex gap-4">
-                                <button onClick={() => setGameState('LEADERBOARD')} className="bg-slate-800 hover:bg-slate-700 text-white p-4 rounded-2xl transition-transform active:scale-95 shadow-lg flex flex-col items-center gap-2">
-                                    <Trophy className="w-6 h-6 text-amber-400" />
-                                    <span className="text-xs font-bold uppercase">{t.leaderboard}</span>
+                            <div className="flex gap-6">
+                                <button onClick={() => setGameState('LEADERBOARD')} className="bg-slate-800/80 hover:bg-slate-700 text-white p-6 rounded-3xl transition-transform active:scale-95 shadow-lg flex flex-col items-center gap-2 border border-slate-700">
+                                    <Trophy className="w-8 h-8 text-amber-400" />
+                                    <span className="text-xs font-bold uppercase tracking-widest">{t.leaderboard}</span>
                                 </button>
-                                <button onClick={() => setGameState('SHOP')} className="bg-slate-800 hover:bg-slate-700 text-white p-4 rounded-2xl transition-transform active:scale-95 shadow-lg flex flex-col items-center gap-2">
-                                    <ShoppingBag className="w-6 h-6 text-emerald-400" />
-                                    <span className="text-xs font-bold uppercase">{t.shop}</span>
+                                <button onClick={() => setGameState('SHOP')} className="bg-slate-800/80 hover:bg-slate-700 text-white p-6 rounded-3xl transition-transform active:scale-95 shadow-lg flex flex-col items-center gap-2 border border-slate-700">
+                                    <ShoppingBag className="w-8 h-8 text-emerald-400" />
+                                    <span className="text-xs font-bold uppercase tracking-widest">{t.shop}</span>
                                 </button>
                             </div>
                         </div>
@@ -1384,17 +1403,16 @@ export default function App() {
                                     <p className="text-slate-400 text-center py-8">No scores yet.</p>
                                 ) : (
                                     leaderboard.map((entry, index) => (
-                                        <div key={entry.uid} className={`flex items-center gap-4 p-3 rounded-xl ${index === 0 ? 'bg-amber-500/10 border border-amber-500/30' : index === 1 ? 'bg-slate-300/10 border border-slate-300/30' : index === 2 ? 'bg-amber-700/10 border border-amber-700/30' : 'bg-slate-800/50'}`}>
+                                        <div key={index} className={`flex items-center gap-4 p-3 rounded-xl ${index === 0 ? 'bg-amber-500/10 border border-amber-500/30' : index === 1 ? 'bg-slate-300/10 border border-slate-300/30' : index === 2 ? 'bg-amber-700/10 border border-amber-700/30' : 'bg-slate-800/50'} ${entry.uid === user?.uid ? 'ring-2 ring-emerald-500' : ''}`}>
                                             <div className={`w-8 text-center font-black ${index === 0 ? 'text-amber-400' : index === 1 ? 'text-slate-300' : index === 2 ? 'text-amber-600' : 'text-slate-500'}`}>
                                                 #{index + 1}
                                             </div>
-                                            {entry.photoURL ? (
-                                                <img src={entry.photoURL} alt="" className="w-10 h-10 rounded-full" referrerPolicy="no-referrer" />
-                                            ) : (
-                                                <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center"><UserIcon className="w-5 h-5 text-slate-400" /></div>
-                                            )}
+                                            <div className="w-10 h-10 rounded-full bg-slate-700 flex items-center justify-center border border-slate-600">
+                                                <UserIcon className="w-5 h-5 text-slate-400" />
+                                            </div>
                                             <div className="flex-1 min-w-0">
-                                                <p className="text-white font-bold truncate">{entry.displayName}</p>
+                                                <p className="text-white font-bold truncate">{entry.name}</p>
+                                                <p className="text-slate-500 text-[10px]">{new Date(entry.timestamp).toLocaleDateString()}</p>
                                             </div>
                                             <div className="text-emerald-400 font-black text-xl">{entry.score}</div>
                                         </div>
@@ -1414,20 +1432,11 @@ export default function App() {
                             </h2>
                             <p className="text-slate-400 text-center mb-6 text-sm">{t.customize}</p>
                             
-                            {!user ? (
-                                <div className="text-center py-8 bg-slate-800/50 rounded-2xl border border-slate-700">
-                                    <p className="text-slate-300 mb-4">{t.loginToSave}</p>
-                                    <button onClick={handleLogin} className="bg-blue-600 hover:bg-blue-500 text-white px-6 py-3 rounded-xl font-bold inline-flex items-center gap-2">
-                                        <LogIn className="w-5 h-5" /> {t.login}
-                                    </button>
-                                </div>
-                            ) : (
-                                <>
-                                    <div className="flex gap-2 mb-4">
-                                        <button onClick={() => setShopTab('skins')} className={`flex-1 py-2 rounded-lg font-bold text-sm transition-colors ${shopTab === 'skins' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>{t.skins}</button>
-                                        <button onClick={() => setShopTab('audio')} className={`flex-1 py-2 rounded-lg font-bold text-sm transition-colors ${shopTab === 'audio' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>{t.audio}</button>
-                                        <button onClick={() => setShopTab('coins')} className={`flex-1 py-2 rounded-lg font-bold text-sm transition-colors ${shopTab === 'coins' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>{t.coins}</button>
-                                    </div>
+                            <div className="flex gap-2 mb-4">
+                                <button onClick={() => setShopTab('skins')} className={`flex-1 py-2 rounded-lg font-bold text-sm transition-colors ${shopTab === 'skins' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>{t.skins}</button>
+                                <button onClick={() => setShopTab('audio')} className={`flex-1 py-2 rounded-lg font-bold text-sm transition-colors ${shopTab === 'audio' ? 'bg-emerald-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>{t.audio}</button>
+                                <button onClick={() => setShopTab('coins')} className={`flex-1 py-2 rounded-lg font-bold text-sm transition-colors ${shopTab === 'coins' ? 'bg-amber-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`}>{t.coins}</button>
+                            </div>
                                     <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
                                         {shopTab === 'skins' && SKINS.map(skin => {
                                             const isUnlocked = profile?.unlockedSkins.includes(skin.id);
@@ -1556,8 +1565,6 @@ export default function App() {
                                             </>
                                         )}
                                     </div>
-                                </>
-                            )}
                             <button onClick={() => setGameState('START')} className="mt-6 bg-slate-700 hover:bg-slate-600 text-white py-4 rounded-2xl font-bold text-lg transition-transform active:scale-95 w-full">
                                 {t.menu}
                             </button>
